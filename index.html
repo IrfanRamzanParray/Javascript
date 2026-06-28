@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Supabase Todo App</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js"></script>
+  <style>
+    body { font-family: sans-serif; max-width: 500px; margin: 40px auto; }
+    li { display: flex; justify-content: space-between; margin: 8px 0; align-items: center; }
+    .done { text-decoration: line-through; color: gray; }
+    #authSection, #todoSection { display: none; }
+    .todo-file { width: 60px; height: 60px; object-fit: cover; border-radius: 6px; }
+  </style>
+</head>
+<body>
+
+  <!-- AUTH SECTION -->
+  <div id="authSection">
+    <h2>🔐 Login / Sign Up</h2>
+    <input id="email" type="email" placeholder="Email" /><br/><br/>
+    <input id="password" type="password" placeholder="Password" /><br/><br/>
+    <button onclick="signUp()">Sign Up</button>
+    <button onclick="logIn()">Log In</button>
+    <p id="authMessage"></p>
+  </div>
+
+  <!-- TODO SECTION -->
+  <div id="todoSection">
+    <h2>📝 My Todos</h2>
+    <p id="userEmail"></p>
+    <button onclick="logOut()">Log Out</button>
+    <br/><br/>
+
+    <!-- New Todo Form -->
+    <input id="taskInput" placeholder="New task..." />
+    <input id="fileInput" type="file" accept="image/*" />
+    <button onclick="addTodo()">Add</button>
+
+    <ul id="todoList"></ul>
+  </div>
+
+  <script>
+    const { createClient } = supabase
+
+    const SUPABASE_URL = 'https://srgygqnboqnpjtpxsnbr.supabase.co'
+    const SUPABASE_KEY = 'sb_publishable__Xp67lsju0lNZ_fyNiUu_Q__e22AzPn'
+
+    const db = createClient(SUPABASE_URL, SUPABASE_KEY)
+
+    // ─── AUTH FUNCTIONS ───────────────────────────────
+
+    async function signUp() {
+      const email = document.getElementById('email').value
+      const password = document.getElementById('password').value
+      const { error } = await db.auth.signUp({ email, password })
+      if (error) {
+        document.getElementById('authMessage').textContent = error.message
+      } else {
+        document.getElementById('authMessage').textContent = 'Account created! Please log in.'
+      }
+    }
+
+    async function logIn() {
+      const email = document.getElementById('email').value
+      const password = document.getElementById('password').value
+      const { data, error } = await db.auth.signInWithPassword({ email, password })
+      if (error) {
+        document.getElementById('authMessage').textContent = error.message
+      } else {
+        showTodoSection(data.user)
+      }
+    }
+
+    async function logOut() {
+      await db.auth.signOut()
+      showAuthSection()
+    }
+
+    // ─── UI TOGGLE ────────────────────────────────────
+
+    function showAuthSection() {
+      document.getElementById('authSection').style.display = 'block'
+      document.getElementById('todoSection').style.display = 'none'
+    }
+
+    function showTodoSection(user) {
+      document.getElementById('authSection').style.display = 'none'
+      document.getElementById('todoSection').style.display = 'block'
+      document.getElementById('userEmail').textContent = `Logged in as: ${user.email}`
+      fetchTodos()
+    }
+
+    // ─── STORAGE FUNCTIONS ────────────────────────────
+
+    // UPLOAD file to Supabase Storage
+    async function uploadFile(file, userId) {
+  console.log("File name:", file.name)
+  console.log("File size:", file.size)
+  console.log("File type:", file.type)
+
+  const fileExt = file.name.split('.').pop()
+  const fileName = `${userId}/${Date.now()}.${fileExt}`
+  console.log("Uploading to path:", fileName)
+
+  const { data, error } = await db.storage
+    .from('todo-attachments')
+    .upload(fileName, file)
+
+  if (error) {
+    console.error("Upload failed:", error)
+    alert("Upload error: " + error.message)
+    return null
+  }
+
+  console.log("Upload success:", data)
+
+  const { data: urlData } = db.storage
+    .from('todo-attachments')
+    .getPublicUrl(fileName)
+
+  console.log("Public URL:", urlData.publicUrl)
+  return urlData.publicUrl
+}
+
+    // DELETE file from Supabase Storage
+    async function deleteFile(fileUrl) {
+      // Extract file path from the full URL
+      const path = fileUrl.split('/todo-attachments/')[1]
+
+      const { error } = await db.storage
+        .from('todo-attachments')
+        .remove([path])
+
+      if (error) console.error('Delete error:', error)
+    }
+
+    // ─── TODO FUNCTIONS ───────────────────────────────
+
+    async function fetchTodos() {
+      const { data, error } = await db
+        .from('todos')
+        .select('*')
+        .order('created_at', { ascending: true })
+
+      if (error) return console.error(error)
+
+      const list = document.getElementById('todoList')
+      list.innerHTML = ''
+      data.forEach(todo => {
+        const li = document.createElement('li')
+        li.innerHTML = `
+          <span class="${todo.is_complete ? 'done' : ''}">${todo.task}</span>
+          ${todo.file_url
+            ? `<img src="${todo.file_url}" class="todo-file" />`
+            : '<span>No file</span>'
+          }
+          <span>
+            <button onclick="toggleTodo('${todo.id}', ${todo.is_complete})">
+              ${todo.is_complete ? 'Undo' : 'Done'}
+            </button>
+            <button onclick="deleteTodo('${todo.id}', '${todo.file_url}')">🗑</button>
+          </span>
+        `
+        list.appendChild(li)
+      })
+    }
+
+    async function addTodo() {
+      const input = document.getElementById('taskInput')
+      const fileInput = document.getElementById('fileInput')
+      const task = input.value.trim()
+      if (!task) return
+
+      const { data: { user } } = await db.auth.getUser()
+
+      // Upload file if one was selected
+      let fileUrl = null
+      if (fileInput.files.length > 0) {
+        fileUrl = await uploadFile(fileInput.files[0], user.id)
+      }
+
+      // Insert todo with optional file URL
+      await db.from('todos').insert({
+        task,
+        user_id: user.id,
+        file_url: fileUrl    // null if no file was uploaded
+      })
+
+      input.value = ''
+      fileInput.value = ''
+      fetchTodos()
+    }
+
+    async function toggleTodo(id, current) {
+      await db
+        .from('todos')
+        .update({ is_complete: !current })
+        .eq('id', id)
+      fetchTodos()
+    }
+
+    async function deleteTodo(id, fileUrl) {
+      // Delete file from storage first (if exists)
+      if (fileUrl && fileUrl !== 'null') {
+        await deleteFile(fileUrl)
+      }
+
+      // Then delete the todo from database
+      await db.from('todos').delete().eq('id', id)
+      fetchTodos()
+    }
+
+    // ─── ON PAGE LOAD ─────────────────────────────────
+
+    async function init() {
+      const { data: { session } } = await db.auth.getSession()
+      if (session) {
+        showTodoSection(session.user)
+      } else {
+        showAuthSection()
+      }
+    }
+
+    init()
+  </script>
+</body>
+</html>
